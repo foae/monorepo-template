@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"go-service-template/backend/services/example/storage/postgres/sqlc"
+	"monorepo-template/backend/services/example/storage/postgres/sqlc"
 )
 
 // ListItems returns all items for the given owner.

@@ -15,8 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sharedpg "go-service-template/backend/pkg/postgres"
-	"go-service-template/backend/services/example/storage/postgres/sqlc"
+	sharedpg "monorepo-template/backend/pkg/postgres"
+	"monorepo-template/backend/services/example/storage/postgres/sqlc"
 )
 
 //go:embed migrations/*.sql

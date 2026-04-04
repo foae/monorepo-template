@@ -29,7 +29,7 @@ type config struct {
 
 **DNS pinning with ReplaceHost:** For any URL env var `FOO_URL`, set a companion `FOO_URL_HOST=<hostname>` to override just the hostname portion. This supports per-DC DNS overrides in K8s without touching Vault secrets. The function is fail-closed: if the override is set but the URL cannot be parsed, the process exits.
 
-**WHERE:** `cmd/example/main.go` lines 40-50 (config struct), line 84 (parsing), line 88 (ReplaceHost).
+**WHERE:** `cmd/example/main.go` — `config` struct, `env.Parse(&cfg)`, `envutil.ReplaceHost` call.
 
 ---
 
@@ -52,7 +52,7 @@ type config struct {
 - Never log sensitive data (credentials, tokens, PII).
 - Always use structured fields, not string interpolation: `slog.Info("created", "item_id", id)` not `slog.Info(fmt.Sprintf("created %s", id))`.
 
-**WHERE:** `cmd/example/main.go` lines 53-76 (middleware builder), lines 97-105 (logger init).
+**WHERE:** `cmd/example/main.go` — `buildLoggerMiddleware()` function, `slog.NewJSONHandler` setup in `main()`.
 
 ---
 
@@ -85,7 +85,7 @@ Process exits
 - Phase 3 calls `http.Server.Shutdown()` which stops accepting new connections and waits for in-flight requests to complete, up to the timeout.
 - Background workers are cancelled via their `context.Context` before HTTP shutdown begins.
 
-**WHERE:** `cmd/example/main.go` lines 200-229.
+**WHERE:** `cmd/example/main.go` — from `signal.Notify(stop, ...)` through end of `main()`.
 
 ---
 
@@ -106,7 +106,7 @@ Process exits
 - These are registered directly on the root router, not under `/api/v1`.
 - `slog-chi` is configured to suppress request logs for these paths (noise reduction).
 
-**WHERE:** `cmd/example/main.go` lines 156-170.
+**WHERE:** `cmd/example/main.go` — `/health`, `/ready`, `/metrics` route registrations.
 
 ---
 
@@ -240,7 +240,7 @@ go core.StartWorker(workerCtx, worker, cfg.WorkerInterval)
 - **Clean shutdown:** The worker's context is cancelled during graceful shutdown (before HTTP drain). The `select` on `ctx.Done()` exits the loop immediately.
 - **No panic propagation:** Worker errors are logged, not propagated. A worker failure does not crash the service.
 
-**WHERE:** `core/worker.go` (implementation), `cmd/example/main.go` lines 135-139 (wiring).
+**WHERE:** `core/worker.go` (implementation), `cmd/example/main.go` — `core.NewWorker` / `core.StartWorker` calls in `main()`.
 
 ---
 
@@ -270,7 +270,7 @@ r.Use(
 
 **OTel wrapping:** The entire router is wrapped with `otelhttp.NewHandler` at the `http.Server` level, not as Chi middleware. This ensures every request gets a trace span.
 
-**WHERE:** `cmd/example/main.go` lines 147-153.
+**WHERE:** `cmd/example/main.go` — `r.Use(...)` block in `main()`.
 
 ---
 

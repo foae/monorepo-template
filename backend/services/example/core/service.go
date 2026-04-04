@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"go-service-template/backend/services/example/storage/postgres"
+	"monorepo-template/backend/services/example/storage/postgres"
 )
 
 // Sentinel errors for the core layer. Handler maps these to HTTP status codes.

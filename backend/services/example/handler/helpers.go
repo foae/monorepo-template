@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"go-service-template/backend/services/example/storage/postgres/sqlc"
+	"monorepo-template/backend/services/example/storage/postgres/sqlc"
 )
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

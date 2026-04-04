@@ -1,4 +1,4 @@
-module go-service-template/backend
+module monorepo-template/backend
 
 go 1.24.0
 

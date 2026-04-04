@@ -22,12 +22,12 @@ import (
 	slogchi "github.com/samber/slog-chi"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"go-service-template/backend/pkg/envutil"
-	"go-service-template/backend/pkg/httputil"
-	"go-service-template/backend/pkg/observability"
-	"go-service-template/backend/services/example/core"
-	"go-service-template/backend/services/example/handler"
-	"go-service-template/backend/services/example/storage/postgres"
+	"monorepo-template/backend/pkg/envutil"
+	"monorepo-template/backend/pkg/httputil"
+	"monorepo-template/backend/pkg/observability"
+	"monorepo-template/backend/services/example/core"
+	"monorepo-template/backend/services/example/handler"
+	"monorepo-template/backend/services/example/storage/postgres"
 
 	_ "go.uber.org/automaxprocs"
 )

@@ -5,14 +5,14 @@ A production-ready monorepo template for building Go microservices. Based on pat
 ## How to Use This Template
 
 1. Copy this directory into your project
-2. Search-and-replace `go-service-template/backend` with your module path in all `.go` files and `go.mod`
+2. Search-and-replace `monorepo-template/backend` with your module path in all `.go` files and `go.mod`
 3. `cd backend && go build ./services/example/cmd/example` to verify
 4. See [docs/adding-a-service.md](docs/adding-a-service.md) for creating new services from the example
 
 ## Repository Structure
 
 ```
-go-service-template/
+monorepo-template/
 ├── README.md                          # YOU ARE HERE — start reading here
 ├── backend/                           # Go module root
 │   ├── go.mod                         # Single module for all services + shared packages

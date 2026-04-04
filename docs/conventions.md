@@ -27,8 +27,8 @@ import (
     "github.com/go-chi/chi/v5"
     "github.com/jackc/pgx/v5/pgtype"
 
-    "go-service-template/backend/services/example/core"
-    "go-service-template/backend/services/example/storage/postgres/sqlc"
+    "monorepo-template/backend/services/example/core"
+    "monorepo-template/backend/services/example/storage/postgres/sqlc"
 )
 ```
 

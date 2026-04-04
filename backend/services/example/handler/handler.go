@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"go-service-template/backend/services/example/core"
+	"monorepo-template/backend/services/example/core"
 )
 
 // Handler is the HTTP transport layer. It extracts request parameters,

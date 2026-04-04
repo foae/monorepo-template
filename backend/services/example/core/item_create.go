@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"go-service-template/backend/services/example/storage/postgres/sqlc"
+	"monorepo-template/backend/services/example/storage/postgres/sqlc"
 )
 
 // CreateItem creates a new item for the given owner.

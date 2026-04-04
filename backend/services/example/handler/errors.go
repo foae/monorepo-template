@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"go-service-template/backend/services/example/core"
+	"monorepo-template/backend/services/example/core"
 )
 
 // mapItemError maps core-layer errors to HTTP status codes.
