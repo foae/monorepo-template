@@ -207,7 +207,7 @@ SERVICE_NAME=myservice
 # ...
 
 # DNS pinning (optional)
-# POSTGRES_URL_HOST=custom-hostname.internal
+# POSTGRES_URL_HOST=postgres.example.svc.cluster.local
 ```
 
 ## 10. Verification Checklist
@@ -240,7 +240,9 @@ Manual checks:
 
 ## 11. Add CI Workflow
 
-Create `.github/workflows/myservice.yml` with path-gated triggers:
+The repo-wide workflow at `.github/workflows/ci.yml` already formats, vets, builds and tests every package under `backend/`, checks that `go.mod` is tidy, and verifies the sqlc-generated code is up to date. A new service under `backend/services/` is covered automatically.
+
+Add a dedicated workflow only when you need something service-specific, such as a path-gated Docker image build and push. If you do, include `backend/pkg/**` in the trigger paths so shared package changes also trigger it:
 
 ```yaml
 name: myservice CI
@@ -256,8 +258,6 @@ on:
       - 'backend/services/myservice/**'
       - 'backend/pkg/**'
 ```
-
-Include `backend/pkg/**` in the trigger paths so that shared package changes also trigger your service's CI. The workflow should build the Docker image and run tests.
 
 ---
 
@@ -276,4 +276,4 @@ Include `backend/pkg/**` in the trigger paths so that shared package changes als
 | Handler | `handler/myentity.go`, `handler/types.go`, `handler/errors.go`, `handler/helpers.go` |
 | Wiring | `cmd/myservice/main.go` |
 | Config | `.env.example` |
-| CI | `.github/workflows/myservice.yml` |
+| CI | `.github/workflows/ci.yml` covers it; add `myservice.yml` only for service-specific jobs |

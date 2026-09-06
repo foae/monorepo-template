@@ -17,3 +17,8 @@ Thumbs.db
 # Env
 .env
 !.env.example
+
+# Private/local configuration (never committed)
+.private/
+.env.*
+!.env.example
