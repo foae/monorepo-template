@@ -18,7 +18,7 @@ The repository is versioned as a whole with SemVer tags (`vMAJOR.MINOR.PATCH`). 
 
 1. Merge or push the change to `main` and wait for CI to pass.
 2. Pick the bump: `patch` for fixes and doc-only changes, `minor` for new patterns, packages or recipes that stay backward compatible, `major` for changes that require consumers of the template to restructure (layer model, module layout, justfile contract).
-3. Run `just release-next <patch|minor|major>` (or `just release vX.Y.Z` for an explicit version). The recipe refuses to run on a dirty tree, off `main`, when local `main` differs from `origin/main`, or when the tag already exists. It runs `just check`, creates an annotated tag, pushes it and publishes a GitHub release with generated notes.
+3. Run `just release-next <patch|minor|major>` (or `just release vX.Y.Z`). Full procedure: `docs/releasing.md`.
 4. Confirm with `gh release view <tag>`.
 
 Never move or delete a published tag. If a release is wrong, publish a new patch version.
