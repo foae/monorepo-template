@@ -1,16 +1,18 @@
 # Using This Template for Your Own Project
 
+Read [conventions](conventions.md) before editing Go. Use [architecture](architecture.md) for boundaries and [patterns](patterns.md) for a specific runtime concern; avoid loading every guide for a small change.
+
 1. Copy the repository (or use it as a GitHub template).
 2. Replace the module path `monorepo-template/backend` with your own in `backend/go.mod` and every import:
    ```bash
    grep -rl 'monorepo-template/backend' backend --include='*.go' --include='go.mod' \
      | xargs sed -i 's#monorepo-template/backend#github.com/you/yourrepo/backend#g'
    ```
-3. Run `just check` to confirm everything still builds.
+3. Rename the module path in documentation examples as well. Configure `goimports -local` for the new module prefix. Run `just check` to confirm everything still builds.
 4. Follow [adding-a-service.md](adding-a-service.md) to create your first real service from `services/example`.
 
 
-Then read [adding-a-service.md](adding-a-service.md) for the full service checklist.
+Before deployment, replace the example's trusted owner-header assumption with your actual authentication boundary, restrict metrics access, and configure database credentials/TLS. Tracing stays off unless explicitly enabled. Go checks cover every service; add each new SQL config to the root check recipe and each deployed image to CI.
 
 ## Everyday commands
 

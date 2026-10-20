@@ -4,6 +4,7 @@
 *.so
 *.dylib
 bin/
+vendor/
 
 # IDE
 .idea/

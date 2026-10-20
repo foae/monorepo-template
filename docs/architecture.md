@@ -1,5 +1,7 @@
 # Architecture
 
+Read this when changing package boundaries. For task-level instructions use [adding a service](adding-a-service.md); for runtime contracts use [patterns](patterns.md). The module's Go code is the source of truth.
+
 ## Module Strategy
 
 There is a single `go.mod` at `backend/`. All services under `backend/services/` and all shared packages under `backend/pkg/` share one dependency tree. This means:
@@ -14,18 +16,7 @@ The `backend/` directory exists to create a clean module boundary. Go tooling (b
 
 Every service follows a strict 4-layer architecture:
 
-```
-cmd/         Entry point, config, DI, router, middleware, graceful shutdown
-  |
-  v
-core/        Business logic, sentinel errors, state machines, workers
-  |
-  v
-handler/     HTTP transport: request parsing, response writing, error mapping
-  |
-  v
-storage/     Data access: DB client, migrations, sqlc queries
-```
+The request dependency chain is `handler → core → storage → shared infrastructure`. `cmd` constructs and connects all four layers; it is not an intermediate request layer. The detailed import rules below are authoritative.
 
 ### cmd (Entry Point)
 
@@ -43,8 +34,8 @@ storage/     Data access: DB client, migrations, sqlc queries
 
 **Key files:**
 - `core/service.go` -- Service struct, constructor, Close(), sentinel errors
-- `core/item_create.go` -- Idempotent creation with state machine
-- `core/item_delete.go` -- Deletion with rollback
+- `core/item_create.go` -- Unique-key upsert with input validation
+- `core/item_delete.go` -- Ownership-checked deletion
 - `core/worker.go` -- Background periodic task
 
 ### handler (HTTP Transport)
@@ -103,10 +94,10 @@ Current packages:
 
 | Package | Purpose |
 |---------|---------|
-| `pkg/postgres` | PGX pool wrapper with both `pgxpool.Pool` and `database/sql.DB` (for golang-migrate compatibility) |
-| `pkg/envutil` | `ReplaceHost()` for DNS pinning via `_HOST` companion env vars |
-| `pkg/httputil` | Prometheus `ReqMonitor` middleware for Chi (request count, in-flight, latency histogram) |
-| `pkg/observability` | OTel tracing setup (gRPC exporter, optional/skip if no endpoint configured) |
+| `pkg/postgres` | Owns one pgx connection pool; migration connections are owned separately by service storage |
+| `pkg/envutil` | Error-returning, IPv6-aware hostname overrides |
+| `pkg/httputil` | Safe HTTP recovery and request metrics |
+| `pkg/observability` | Optional tracing and context-correlated JSON logging |
 
 ## Service Directory Layout
 

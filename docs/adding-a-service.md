@@ -1,279 +1,74 @@
-# Adding a Service
+# Adding a service
 
-Step-by-step guide for bootstrapping a new service from the example template.
+**Goal:** produce a runnable service with the example's configuration, safety and lifecycle contracts intact. First read [conventions](conventions.md); consult [patterns](patterns.md) only for the concern you are changing.
 
-Throughout this guide, replace `myservice` with your actual service name and `myentity` with your primary domain entity (e.g., `bucket`, `credential`, `job`).
+## 1. Copy a clean example
 
----
-
-## 1. Copy the Example Service
+From the repository root:
 
 ```bash
 cp -r backend/services/example backend/services/myservice
 ```
 
-## 2. Rename: Search and Replace
+Do not copy a developer's `.env`, binaries or other local artifacts into the new service. `backend/` remains the only Go module; do not run `go mod init` in a service.
 
-These replacements must be applied across all files in `backend/services/myservice/`:
+## 2. Rename the wiring
 
-| Find | Replace | Files affected |
-|------|---------|----------------|
-| `services/example` | `services/myservice` | All `.go` files (import paths) |
-| `example` (binary name) | `myservice` | `cmd/example/` dir name, `justfile`, `Dockerfile` |
-| `item` / `Item` (entity) | `myentity` / `MyEntity` | `core/`, `handler/`, `storage/`, `q.sql`, migrations |
+Within `backend/services/myservice/`:
 
-Concretely:
+- Rename `cmd/example/` to `cmd/myservice/`.
+- Replace `services/example` in imports, including tests, with `services/myservice`.
+- Set `SERVICE_NAME := "myservice"` in the service justfile; retain the shared `service.just` import.
+- Update the Dockerfile's build target, output binary, copy and entrypoint names. Keep its build context at `backend/`, not the service directory.
+- Update `SERVICE_NAME`, database name and any service-specific defaults in `main.go` and `.env.example`.
 
-```bash
-cd backend/services/myservice
+Check for remaining `example` references and decide each one; do not blindly rename dependency/module names.
 
-# Rename cmd directory
-mv cmd/example cmd/myservice
+## 3. Define schema and queries
 
-# Fix import paths in all Go files
-find . -name '*.go' -exec sed -i 's|services/example|services/myservice|g' {} +
+For a new, never-deployed service, replace the copied initial schema and matching down migration with your entity. Once deployed, migrations are append-only.
 
-# Fix justfile
-sed -i 's/SERVICE_NAME := "example"/SERVICE_NAME := "myservice"/' justfile
-
-# Fix Dockerfile
-sed -i 's/example/myservice/g' Dockerfile
-```
-
-Then manually rename entity-specific files and types (item -> myentity). This is intentionally not scripted because entity naming requires thought about your domain.
-
-## 3. Define Your Schema
-
-**Write the migration:**
-
-Delete the example migration and create your own:
+Edit `storage/postgres/q.sql`, then run from the new service directory:
 
 ```bash
-rm storage/postgres/migrations/001_items.up.sql
-rm storage/postgres/migrations/001_items.down.sql
+just sqlc-generate
 ```
 
-Create `storage/postgres/migrations/001_myentities.up.sql`:
+Commit the generated files. Check `sqlc.yaml` package/output paths and all `go:embed` inputs. SQL migrations are already admitted by `backend/.dockerignore`; other embedded assets require explicit allowlist entries.
 
-```sql
-CREATE TABLE IF NOT EXISTS myentities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL,
-    owner_id VARCHAR(255) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'PROVISIONING',
-    -- your domain-specific columns here
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT myentities_name_owner_unique UNIQUE (name, owner_id)
-);
+## 4. Implement core and transport
 
-CREATE INDEX IF NOT EXISTS idx_myentities_owner_id ON myentities(owner_id);
-CREATE INDEX IF NOT EXISTS idx_myentities_status ON myentities(status);
-```
+- Core owns validation, ownership rules, domain errors and database operations. It accepts contexts and domain inputs, not HTTP types.
+- Handlers parse bounded inputs, invoke core, and map errors to safe JSON responses. Retain fixed messages for unknown errors; never expose `err.Error()`.
+- Update response DTOs, routes, error mappings and behavior tests. Remove example-only endpoints and obsolete tests rather than retaining dead compatibility paths.
+- Keep `X-Owner-Id` only behind an authentication proxy that strips untrusted values and prevents direct access. Otherwise implement the project's actual authentication boundary before deployment.
 
-Create the corresponding `001_myentities.down.sql`:
+Do not claim the example supplies pagination, user authentication, distributed locks or a state machine: those are application-specific contracts.
 
-```sql
-DROP TABLE IF EXISTS myentities;
-```
+## 5. Preserve lifecycle ownership
 
-**Write queries in `q.sql`:**
+Keep the top-level automaxprocs blank import. Its pre-main plain-text log is the documented upstream exception; all service-owned startup/runtime logs remain JSON. Libraries return errors; only `main` selects the process exit status.
 
-Replace the example queries with your entity-specific queries. Keep the sqlc annotation format:
+Keep synchronous listener binding, bounded HTTP timeouts, safe recovery, readiness drain and completion joins. Retain the middleware order in the example. If the service needs no background work, remove the worker implementation and its launch/join coherently; do not leave an unowned goroutine. Every new goroutine needs cancellation and a completion owner; task panic recovery belongs inside that goroutine.
 
-```sql
--- name: CreateMyEntity :one
-INSERT INTO myentities (name, owner_id, status)
-VALUES ($1, $2, $3)
-RETURNING *;
+Tracing stays disabled until the service-specific endpoint is set. Pass request contexts through core/database calls so tracing, cancellation and log correlation remain effective.
 
--- name: GetMyEntityByID :one
-SELECT * FROM myentities WHERE id = $1 LIMIT 1;
-```
+## 6. Verify the runnable service
 
-**Update `sqlc.yaml`:**
-
-The `schema` field points at the migrations directory. No change needed unless you renamed it. The `queries` field points at `q.sql`. No change needed.
-
-**Regenerate:**
+From the new service directory:
 
 ```bash
-cd storage/postgres && sqlc generate
+cp .env.example .env
+# Set a reachable PostgreSQL URL in .env.
+just run-local
 ```
 
-This overwrites everything in `sqlc/`. Verify the generated model matches your schema.
+In another terminal, exercise health/readiness, real CRUD, ownership denial, malformed input, database errors and SIGTERM shutdown. Verify dev Debug output, prod Info filtering, JSON error responses, and nonzero exit on an occupied listener. Do not add production panic endpoints merely for smoke testing.
 
-## 4. Define Core Types
+From the repository root, run `just check`. Go checks discover all services; `sqlc vet` and `sqlc diff` discover every `sqlc.yaml` beneath `backend/services/`. CI uses the same gate.
 
-Edit `core/service.go`:
+Run `just docker-build` from the new service and start the image against a real database with runtime configuration. Add a CI image-build job for this service if it is independently deployed; the existing image job builds only `example`.
 
-- Replace sentinel errors with your domain-specific ones. Keep the pattern: one `var` block, all errors as `errors.New(...)`.
-- Update the `Service` struct if you need additional dependencies (e.g., an external API client, a cache).
-- Update the constructor to accept and validate those dependencies.
+## 7. Update the project documentation
 
-```go
-var (
-    ErrMyEntityNotFound  = errors.New("myentity not found")
-    ErrMyEntityDenied    = errors.New("myentity does not belong to this owner")
-    ErrInvalidInput      = errors.New("invalid input")
-)
-
-type Service struct {
-    db       *postgres.Client
-    extAPI   *somepackage.Client  // additional dependency
-}
-```
-
-## 5. Implement Core Methods
-
-Follow the patterns from the example service:
-
-- **Create:** INSERT with ON CONFLICT for idempotency. See `core/item_create.go`.
-- **Delete:** Validate ownership -> delete. See `core/item_delete.go`.
-- **List:** Filter by owner at the query level. Return empty slice (not nil) when no results. See `core/item_list.go`.
-- **Get:** Fetch by ID, validate ownership in Go (not in the query). See `core/item_create.go` `GetItem` method.
-
-Rename files: `item_create.go` -> `myentity_create.go`, etc.
-
-If your service does not need the state machine pattern (PROVISIONING/ACTIVE/DELETING), simplify. The pattern exists for services that coordinate with external systems. A purely CRUD service can skip intermediate states.
-
-## 6. Wire Up Handlers
-
-**`types.go`:** Define request/response DTOs for your entity. Follow the existing pattern: separate `Create*Request` and `*Response` structs, all with JSON tags.
-
-**`item.go` -> `myentity.go`:** Rename and update each handler function. The structure stays the same:
-
-1. Extract owner ID from header.
-2. Parse request body or URL params.
-3. Call core method.
-4. On error, map via `mapMyEntityError()` and `writeError()`.
-5. On success, convert to response DTO and `writeJSON()`.
-
-**`errors.go`:** Update the error mapping function to use your new sentinel errors:
-
-```go
-func mapMyEntityError(err error) int {
-    switch {
-    case errors.Is(err, core.ErrMyEntityNotFound):
-        return http.StatusNotFound
-    case errors.Is(err, core.ErrMyEntityDenied):
-        return http.StatusForbidden
-    // ...
-    }
-}
-```
-
-**`helpers.go`:** Update `itemToResponse` -> `myEntityToResponse`. Update the import of the sqlc model type.
-
-## 7. Update main.go
-
-In `cmd/myservice/main.go`:
-
-- Update the `config` struct with any new env vars your service needs.
-- Update the DI section: create any new clients, pass them to `core.New(...)`.
-- Update the route registration:
-
-```go
-r.Route("/api/v1", func(api chi.Router) {
-    api.Post("/myentities", h.HandleCreateMyEntity())
-    api.Get("/myentities", h.HandleListMyEntities())
-    api.Get("/myentities/{id}", h.HandleGetMyEntity())
-    api.Delete("/myentities/{id}", h.HandleDeleteMyEntity())
-})
-```
-
-- If you don't need the background worker, remove the worker context, `NewWorker`, and `StartWorker` lines.
-
-## 8. Update Dockerfile and justfile
-
-**Dockerfile:** Should already be correct from step 2. Verify the build path and binary name:
-
-```dockerfile
-RUN go build -o /opt/myservice ./services/myservice/cmd/myservice
-```
-
-**justfile:** Verify `SERVICE_NAME` is correct. The shared recipes in `service.just` derive all paths from it.
-
-## 9. Update .env.example
-
-Document all env vars your service uses. Include required vars without defaults, optional vars with their defaults, and DNS pinning companions:
-
-```bash
-# Required
-POSTGRES_URL=postgres://postgres:postgres@localhost:5432/myservice?sslmode=disable
-
-# Optional
-SERVICE_NAME=myservice
-# ...
-
-# DNS pinning (optional)
-# POSTGRES_URL_HOST=postgres.example.svc.cluster.local
-```
-
-## 10. Verification Checklist
-
-Run from `backend/`:
-
-```bash
-# Syntax and static analysis
-go vet ./services/myservice/...
-
-# Build
-go build ./services/myservice/cmd/myservice
-
-# Tests (write them first or now)
-go test -race -v ./services/myservice/...
-
-# Regenerate sqlc and verify no diff
-cd services/myservice/storage/postgres && sqlc generate
-git diff --exit-code services/myservice/storage/postgres/sqlc/
-```
-
-Manual checks:
-
-- [ ] Start the service locally: `ENV_MODE=dev go run ./services/myservice/cmd/myservice`
-- [ ] `GET /health` returns 200
-- [ ] `GET /ready` returns 200
-- [ ] `GET /metrics` returns Prometheus text format
-- [ ] CRUD endpoints work with `X-Owner-Id` header
-- [ ] `.env.example` documents all env vars
-
-## 11. Add CI Workflow
-
-The repo-wide workflow at `.github/workflows/ci.yml` already formats, vets, builds and tests every package under `backend/`, checks that `go.mod` is tidy, and verifies the sqlc-generated code is up to date. A new service under `backend/services/` is covered automatically.
-
-Add a dedicated workflow only when you need something service-specific, such as a path-gated Docker image build and push. If you do, include `backend/pkg/**` in the trigger paths so shared package changes also trigger it:
-
-```yaml
-name: myservice CI
-
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'backend/services/myservice/**'
-      - 'backend/pkg/**'
-  pull_request:
-    paths:
-      - 'backend/services/myservice/**'
-      - 'backend/pkg/**'
-```
-
----
-
-## Quick Reference: Files to Touch
-
-| Step | Files |
-|------|-------|
-| Copy | `services/example/` -> `services/myservice/` |
-| Rename binary | `cmd/example/` -> `cmd/myservice/`, `justfile`, `Dockerfile` |
-| Import paths | Every `.go` file |
-| Schema | `migrations/001_*.sql` |
-| Queries | `q.sql` |
-| Codegen | `sqlc generate` |
-| Core types | `core/service.go` |
-| Core methods | `core/myentity_*.go` |
-| Handler | `handler/myentity.go`, `handler/types.go`, `handler/errors.go`, `handler/helpers.go` |
-| Wiring | `cmd/myservice/main.go` |
-| Config | `.env.example` |
-| CI | `.github/workflows/ci.yml` covers it; add `myservice.yml` only for service-specific jobs |
+Document new configuration in `.env.example` and the service's operator guide, including authentication/network assumptions, migrations and shutdown budgets. Update the root entry point to route readers to the service. Keep implementation details in source and link them rather than duplicating long code blocks. Follow [releasing](releasing.md) when publishing consumed template changes.

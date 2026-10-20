@@ -2,12 +2,15 @@ package handler
 
 import (
 	"encoding/json"
-	"log/slog"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const maxCreateItemBodyBytes = 1 << 20
 
 // HandleCreateItem handles POST /api/v1/items.
 func (h *Handler) HandleCreateItem() http.HandlerFunc {
@@ -19,16 +22,32 @@ func (h *Handler) HandleCreateItem() http.HandlerFunc {
 		}
 
 		var req CreateItemRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxCreateItemBodyBytes)
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&req)
+		if err == nil {
+			var extra json.RawMessage
+			if trailingErr := decoder.Decode(&extra); trailingErr != io.EOF {
+				if trailingErr == nil {
+					err = errors.New("multiple JSON values")
+				} else {
+					err = trailingErr
+				}
+			}
+		}
+		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request_body_too_large", "request body too large")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "bad_request", "invalid request body")
 			return
 		}
 
 		item, err := h.svc.CreateItem(r.Context(), ownerID, req.Name)
 		if err != nil {
-			status := mapItemError(err)
-			slog.Error("failed to create item", "error", err, "owner_id", ownerID, "name", req.Name)
-			writeError(w, status, "create_item_failed", err.Error())
+			writeItemError(r.Context(), w, "create_item", err)
 			return
 		}
 
@@ -53,8 +72,7 @@ func (h *Handler) HandleGetItem() http.HandlerFunc {
 
 		item, err := h.svc.GetItem(r.Context(), ownerID, itemID)
 		if err != nil {
-			status := mapItemError(err)
-			writeError(w, status, "get_item_failed", err.Error())
+			writeItemError(r.Context(), w, "get_item", err)
 			return
 		}
 
@@ -73,8 +91,7 @@ func (h *Handler) HandleListItems() http.HandlerFunc {
 
 		items, err := h.svc.ListItems(r.Context(), ownerID)
 		if err != nil {
-			slog.Error("failed to list items", "error", err, "owner_id", ownerID)
-			writeError(w, http.StatusInternalServerError, "list_items_failed", err.Error())
+			writeItemError(r.Context(), w, "list_items", err)
 			return
 		}
 
@@ -103,9 +120,7 @@ func (h *Handler) HandleDeleteItem() http.HandlerFunc {
 		}
 
 		if err := h.svc.DeleteItem(r.Context(), ownerID, itemID); err != nil {
-			status := mapItemError(err)
-			slog.Error("failed to delete item", "error", err, "owner_id", ownerID, "item_id", itemID)
-			writeError(w, status, "delete_item_failed", err.Error())
+			writeItemError(r.Context(), w, "delete_item", err)
 			return
 		}
 

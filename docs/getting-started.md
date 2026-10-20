@@ -1,102 +1,99 @@
-# Getting Started
+# Getting started
+
+Use this page to run the unmodified example. To change code, start with [conventions](conventions.md); to create your own service, use [adding a service](adding-a-service.md).
 
 ## Prerequisites
 
-| Tool | Version | Purpose |
-|------|---------|---------|
-| [Go](https://go.dev/dl/) | 1.27 or newer (see `backend/go.mod`) | build and test |
-| [just](https://github.com/casey/just) | any recent | command runner |
-| [sqlc](https://docs.sqlc.dev/en/latest/overview/install.html) | 1.31.x | regenerate query code (CI pins 1.31.1) |
-| PostgreSQL | 14 or newer | runtime dependency of the example service |
-| Docker | optional | container builds, or running PostgreSQL locally |
-| [GitHub CLI](https://cli.github.com/) | optional | needed only by the `release` recipes |
+| Tool | Pinned version | Source of truth |
+|---|---|---|
+| Go | 1.27.3 | `backend/go.mod` |
+| just | 1.59.0 | `.github/workflows/ci.yml` |
+| sqlc | 1.31.1 | `.github/workflows/ci.yml` |
+| PostgreSQL image | 18.6-trixie | Local example below |
+| Docker | Current stable | Optional for native builds |
 
-Install `just`:
+Install from [Go](https://go.dev/dl/), [just](https://github.com/casey/just/releases) and [sqlc](https://docs.sqlc.dev/en/latest/overview/install.html). The GitHub CLI is only required for publishing releases.
 
-```bash
-# macOS
-brew install just
-
-# Linux
-curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-```
-
-
-
-## 1. Clone and build
+## 1. Verify the checkout
 
 ```bash
 git clone https://github.com/foae/monorepo-template.git
 cd monorepo-template
-just check                 # gofmt, vet, tidy, build, test, sqlc diff (same as CI)
+just check
 ```
 
-## 2. Start PostgreSQL
+Expected: formatting, vet, dependency tidiness, build, race tests and SQL generation checks pass. Run direct `go` commands from `backend/`, the module root.
 
-Any reachable PostgreSQL works. For a throwaway local instance:
+## 2. Start a disposable database
 
 ```bash
 docker run --rm -d --name example-pg \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=example \
-  -p 5432:5432 postgres:17
+  -p 127.0.0.1:5432:5432 postgres:18.6-trixie
+docker exec example-pg pg_isready -h 127.0.0.1 -U postgres -d example
 ```
 
-## 3. Configure and run the example service
+Wait for the TCP readiness check to succeed before starting the service. During first initialization PostgreSQL briefly starts a Unix-socket-only server; a socket readiness check can succeed too early. This container has no persistent volume and is for local development only. Stop it with `docker stop example-pg` when finished.
+
+## 3. Run the service
 
 ```bash
 cd backend/services/example
-cp .env.example .env       # edit POSTGRES_URL if your database differs
-just run-local             # builds backend/bin/example and runs it from this directory
+cp .env.example .env
+just run-local
 ```
 
-Migrations run automatically on startup. The service listens on `0.0.0.0:8080` by default.
+Migrations finish before HTTP serving. Expect JSON startup logs and `service listening` on port 8080. The automaxprocs blank import emits one upstream pre-main plain-text diagnostic; see [logging](patterns.md#json-logging-and-trace-correlation).
 
-## 4. Try the API
+## 4. Exercise the API
 
-Every item belongs to an owner identified by the `X-Owner-Id` header, which is expected to be set by an upstream authentication proxy.
+Use another terminal:
 
 ```bash
-# health, readiness, metrics
 curl -i localhost:8080/health
 curl -i localhost:8080/ready
-curl -s localhost:8080/metrics | head
-
-# create (idempotent per owner + name), list, get, delete
-curl -s -X POST localhost:8080/api/v1/items \
+curl -s localhost:8080/metrics
+curl -i -X POST localhost:8080/api/v1/items \
   -H 'X-Owner-Id: alice' -H 'Content-Type: application/json' \
   -d '{"name":"first"}'
-curl -s localhost:8080/api/v1/items -H 'X-Owner-Id: alice'
-curl -s localhost:8080/api/v1/items/<id> -H 'X-Owner-Id: alice'
-curl -s -X DELETE localhost:8080/api/v1/items/<id> -H 'X-Owner-Id: alice'
+curl -i localhost:8080/api/v1/items -H 'X-Owner-Id: alice'
 ```
 
-## 5. Docker
+Use the returned ID for `GET /api/v1/items/<id>` and `DELETE /api/v1/items/<id>`. Create returns 201; delete returns 204 without a body. Repeating creation returns the same item ID and refreshes `updated_at`. Missing owner returns 401; another owner's ID returns 403; missing items return 404. Invalid JSON returns a safe 400, unknown internal failures a safe 500.
+
+**Security boundary:** `X-Owner-Id` is not authentication. Before exposing the API, an authenticated proxy must replace untrusted owner headers and prevent direct access, or you must implement authentication. Keep metrics private. The example's readiness reports lifecycle state, not continuous database availability.
+
+Press Ctrl-C to stop: readiness becomes unavailable, the worker is canceled, HTTP drains and the worker is joined before database closure. Expected exit code: 0. Invalid config, bind failure and shutdown deadline failures exit 1.
+
+## 5. Build a container
+
+From `backend/services/example/`:
 
 ```bash
-cd backend/services/example
-just docker-build          # image tagged "example"
-just docker-run            # runs with .env.example; pass a file to override: just docker-run .env
+just docker-build
+just docker-run .env
 ```
 
-Inside a container `localhost` in `POSTGRES_URL` refers to the container itself. Point it at your database host, or set `POSTGRES_URL_HOST=host.docker.internal` (Docker Desktop) to override only the hostname.
-
+Set `POSTGRES_URL` to an address reachable **from the container**, not its localhost. Docker Desktop can use `POSTGRES_URL_HOST=host.docker.internal`. On Linux, use a user-defined Docker network with the database container name, or explicitly supply a host-gateway mapping. The image runs without root or a shell; it contains only the binary and CA certificates. `.env` enters only through runtime `--env-file`, never the build context.
 
 ## Configuration
 
-The example service reads these environment variables (see `backend/services/example/.env.example`). A `.env` file in the service directory is loaded automatically when present; it is git-ignored.
+Environment variables take precedence over a working-directory `.env`. Commit only placeholder `.env.example` files; keep actual credentials in ignored local files or deployment secrets.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `POSTGRES_URL` | yes | | PostgreSQL connection URL |
-| `POSTGRES_URL_HOST` | no | | Overrides only the hostname in `POSTGRES_URL` (useful for per-cluster DNS without changing the secret) |
-| `SERVICE_NAME` | no | `example` | Name used in logs and metrics |
-| `SERVICE_VERSION` | no | `v1.0.0` | Version reported in logs and traces |
-| `ENV_MODE` | no | `dev` | `dev` enables debug logging; `prod` enables info level and trace IDs in logs |
-| `HTTP_LISTEN_ADDR` | no | `0.0.0.0:8080` | Listen address |
-| `SERVICE_REGION` | no | `local` | Region label for logs and traces |
-| `WORKER_INTERVAL` | no | `1h` | Background worker interval |
-| `GRACEFUL_SHUTDOWN_TIMEOUT` | no | `90s` | Upper bound for draining in-flight requests |
-| `OTEL_TRACING_ENDPOINT` | no | | OTLP gRPC endpoint; tracing is disabled when empty |
+| Variable | Default | Contract |
+|---|---|---|
+| `POSTGRES_URL` | Required | Nonempty PostgreSQL URL |
+| `POSTGRES_URL_HOST` | Unset | Override hostname; preserve original port |
+| `SERVICE_NAME` | `example` | Service identity |
+| `SERVICE_VERSION` | `v1.0.0` | Deployment version label |
+| `ENV_MODE` | `prod` | `dev`: Debug+; `prod`: Info+; local `.env.example` opts into `dev` |
+| `HTTP_LISTEN_ADDR` | `0.0.0.0:8080` | Use `[::]:8080` for IPv6 |
+| `SERVICE_REGION` | `local` | Trace resource region |
+| `WORKER_INTERVAL` | `1h` | Positive interval; first run after one minute |
+| `GRACEFUL_SHUTDOWN_TIMEOUT` | `90s` | Positive HTTP/worker/drain budget |
+| `HTTP_DRAIN_DELAY` | `5s` | Nonnegative endpoint deregistration delay |
+| `OTEL_TRACING_ENDPOINT` | Empty | Disabled; enable with `host:4317` |
+| `OTEL_TRACING_SAMPLE_RATIO` | `0.1` | Root ratio in `[0,1]` |
+| `OTEL_TRACING_INSECURE` | `false` | TLS by default; true for trusted plaintext |
 
-Keep real credentials out of the repository: use `.env` files or a `.private/` directory, both of which are git-ignored. Commit only `.env.example` files with placeholder values.
-
+For tracing activation, propagation, sampling, shutdown and IPv6 override details, read [patterns](patterns.md). Plan the orchestrator termination grace for the shutdown timeout **plus five seconds** for trace flushing.

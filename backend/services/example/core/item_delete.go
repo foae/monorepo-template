@@ -29,7 +29,7 @@ func (s *Service) DeleteItem(ctx context.Context, ownerID string, itemID pgtype.
 	}
 
 	slog.InfoContext(ctx, "item deleted",
-		"item_id", itemID, "name", item.Name, "owner_id", ownerID)
+		"item_id", itemID)
 
 	return nil
 }

@@ -4,24 +4,34 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"monorepo-template/backend/pkg/observability"
 )
 
 // Worker runs periodic background tasks.
 type Worker struct {
 	logger *slog.Logger
+	task   func(context.Context)
 }
 
 // NewWorker creates a new background worker.
 func NewWorker(logger *slog.Logger) *Worker {
 	return &Worker{
 		logger: logger,
+		task: func(ctx context.Context) {
+			logger.DebugContext(ctx, "worker: heartbeat")
+		},
 	}
 }
 
 // StartWorker runs the worker loop. It executes once after a 1-minute startup
 // delay, then on a fixed interval. Blocks until ctx is cancelled.
 func StartWorker(ctx context.Context, w *Worker, interval time.Duration) {
-	w.logger.Info("worker: starting background worker",
+	if interval <= 0 {
+		w.logger.ErrorContext(ctx, "worker: interval must be positive")
+		return
+	}
+	w.logger.InfoContext(ctx, "worker: starting background worker",
 		"interval", interval, "startup_delay", "1m")
 
 	// Run once after startup delay
@@ -38,23 +48,23 @@ func StartWorker(ctx context.Context, w *Worker, interval time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
-			w.logger.Info("worker: shutting down")
+			w.logger.InfoContext(ctx, "worker: shutting down")
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
 			w.run(ctx)
 		}
 	}
 }
 
 func (w *Worker) run(ctx context.Context) {
-	start := time.Now()
-
-	// Replace with your periodic task:
-	// - Reconcile metrics with an external source
-	// - Clean up expired records
-	// - Sync state with an external system
-	_ = ctx
-
-	w.logger.Info("worker: periodic tick completed",
-		"duration", time.Since(start).Round(time.Millisecond))
+	defer func() {
+		if recover() != nil {
+			// Panic payloads may contain credentials or request data.
+			w.logger.ErrorContext(ctx, "worker: task panicked", "stack", observability.PanicStack())
+		}
+	}()
+	w.task(ctx)
 }

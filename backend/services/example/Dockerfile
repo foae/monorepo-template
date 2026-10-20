@@ -1,18 +1,19 @@
-FROM golang:1.27-bookworm
+FROM golang:1.27.3-trixie@sha256:1896654cfc5c2b5ad74c07f29cb36f5d2d1cbed42e3054070fbfe444e521e83c AS build
 
-ENV CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64 \
-    GO111MODULE=on
-
+ENV CGO_ENABLED=0
 WORKDIR /build
-ADD ./ ./
 
-RUN go build -o /opt/example ./services/example/cmd/example
+COPY go.mod go.sum ./
+RUN go mod download
 
-RUN groupadd example && useradd -g example example -d /home/example && \
-    chown -R example:example /opt/example && chmod +x /opt/example
+COPY . .
+RUN go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/example ./services/example/cmd/example
 
-USER example
+FROM scratch
+
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/example /example
+
+USER 65532:65532
 EXPOSE 8080
-CMD ["/opt/example"]
+ENTRYPOINT ["/example"]

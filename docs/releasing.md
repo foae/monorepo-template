@@ -1,6 +1,6 @@
 # Continuous Integration and Releases
 
-`.github/workflows/ci.yml` runs on every push to `main`, every pull request, and every `v*` tag: gofmt, `go vet`, `go build`, `go test -race`, a `go mod tidy` cleanliness check, `sqlc diff`, and a Docker build of the example service.
+`.github/workflows/ci.yml` runs on every push to `main`, every pull request, and every `v*` tag: gofmt, `go vet`, `go build`, `go test -race`, a `go mod tidy` cleanliness check, `sqlc vet`/`sqlc diff` for every service, and a Docker build of the example service.
 
 Releases are SemVer tags on `main` published as GitHub releases. `just release-next patch|minor|major` (or `just release vX.Y.Z`) verifies the tree, runs the checks, creates an annotated tag, pushes it, and publishes the release with generated notes. Published tags are never moved.
 

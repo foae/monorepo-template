@@ -1,329 +1,85 @@
-# Patterns
+# Service patterns
 
-Each pattern is a standalone section. Reference the example service for working implementations.
+Read [conventions](conventions.md) before editing Go. Use this reference for one concern at a time; the linked source is authoritative, not a second copy of the implementation. For the module and layer boundaries, see [architecture](architecture.md).
 
----
+## Configuration and startup
 
-## Config Loading
+**Source:** [`cmd/example/main.go`](../backend/services/example/cmd/example/main.go), [`envutil/host.go`](../backend/pkg/envutil/host.go).
 
-**WHAT:** Struct-based configuration using `caarlos0/env` with struct tags for env var binding.
+1. `main` installs the JSON logger before loading configuration and owns the process exit code.
+2. `loadConfig` loads an optional working-directory `.env` without replacing existing environment variables, parses typed fields, and validates modes and durations.
+3. Bind the HTTP listener synchronously, before opening database resources. A bind failure returns an error immediately; the process exits 1 rather than waiting for a signal.
+4. Initialize optional tracing, PostgreSQL, migrations, core, and handlers. Database startup has a 30-second deadline and observes termination cancellation, including migration lock waits. Cancellation sends PostgreSQL a query-cancel request (bounded to one extra second), then closes the migration transport; closing the socket alone can leave server-side lock waits active. Begin serving only after initialization succeeds.
 
-**WHY:** Centralizes all config in one place, makes required vs optional explicit, provides typed defaults, fails fast on missing required vars.
+Libraries return errors; they never call `log.Fatal`, `os.Exit`, or panic for ordinary configuration failures. Errors containing supplied values must not cross the startup logging boundary. See [getting started](getting-started.md#configuration) for the complete environment contract.
 
-**HOW:**
+`ReplaceHost` returns `(string, error)`. An unset `_HOST` leaves the value unchanged. Overrides preserve URL credentials, scheme, original port, path and query. DNS names, container aliases containing underscores, IPv4, bracketed/unbracketed IPv6, and IPv6 zones are supported. An override's explicit port is ignored; the original URL port wins. An invalid override returns a sanitized error, not a process exit. This helper accepts URLs, not PostgreSQL keyword/value DSNs.
 
-```go
-type config struct {
-    ServiceName     string        `env:"SERVICE_NAME" envDefault:"example"`
-    PostgresURL     string        `env:"POSTGRES_URL,required"`
-    WorkerInterval  time.Duration `env:"WORKER_INTERVAL" envDefault:"1h"`
-    ShutdownTimeout time.Duration `env:"GRACEFUL_SHUTDOWN_TIMEOUT" envDefault:"90s"`
-}
-```
+## JSON logging and trace correlation
 
-- `required` tag = process exits if missing.
-- `envDefault` = used when env var is unset. If a var has no default and no `required`, it zero-values silently.
-- `time.Duration` fields parse Go duration strings (`1h`, `90s`, `5m`).
-- `godotenv.Load()` runs before `env.Parse()` for local `.env` file support. It is a no-op if the file is missing (prod).
-- After parsing, apply `envutil.ReplaceHost("POSTGRES_URL", cfg.PostgresURL)` for DNS pinning.
+**Source:** [`observability/logger.go`](../backend/pkg/observability/logger.go), `buildLoggerMiddleware` in the entry point.
 
-**DNS pinning with ReplaceHost:** For any URL env var `FOO_URL`, set a companion `FOO_URL_HOST=<hostname>` to override just the hostname portion. This supports per-DC DNS overrides in K8s without touching Vault secrets. The function is fail-closed: if the override is set but the URL cannot be parsed, the process exits.
+Use `observability.NewLogger` and `slog.*Context` when a context exists. `dev` enables Debug and above; `prod` enables Info, Warn and Error. Both modes emit JSON. Valid span contexts add `trace_id` and `span_id` in both modes, including records created after `With` or `WithGroup`.
 
-**WHERE:** `cmd/example/main.go` — `config` struct, `env.Parse(&cfg)`, `envutil.ReplaceHost` call.
+Request logging retains route templates, status and latency, but omits bodies, headers, raw paths, path parameters, query strings and referrers. Do not add credentials, connection strings, user content or PII as custom attributes. Unknown database errors become generic HTTP errors; internal error text is not a public message. Server-side diagnostics retain safe `error_kind` classifications (such as deadlines, connection refusal, SQLSTATE and gRPC codes), not raw error payloads. Expected 4xx domain failures are not logged as internal errors.
 
----
+**Deliberate exception:** the required top-level `_ "go.uber.org/automaxprocs"` import runs before `main` and emits its upstream plain-text diagnostic. It is always enabled, including development. Do not disable it by mode, call `maxprocs.Set` a second time, or claim its pre-main line is JSON. Its explicit setting takes precedence over Go's native container-aware dynamic `GOMAXPROCS` updates.
 
-## Structured Logging
+## HTTP middleware and panic boundaries
 
-**WHAT:** JSON-formatted structured logging via `slog` with environment-aware log levels and OTel trace correlation.
+**Source:** [`httputil/recoverer.go`](../backend/pkg/httputil/recoverer.go), [`httputil/prometheus.go`](../backend/pkg/httputil/prometheus.go).
 
-**WHY:** Machine-parseable logs for production log aggregation. Trace IDs in logs let you correlate a log line with its distributed trace.
+The OTel wrapper surrounds the chi router. Inside chi: request ID → request logger → metrics → recovery → handler. Recovery sits inside logging and metrics so an uncommitted panic becomes a measured/logged 500, not a false 200. It emits a fixed JSON response without the panic payload. Once headers are committed, it aborts the transport using `http.ErrAbortHandler`, rather than completing a truncated success or appending an error body. Hijacked connections are closed on panic. Panic diagnostics include static function/file/line frames, never panic values or runtime argument dumps.
 
-**HOW:**
+Recovery is goroutine-local. New background goroutines require their own recovery and completion ownership; HTTP recovery cannot catch their panics. Do not use panic as normal control flow. Forwarded-IP headers are not trusted by default.
 
-- Logger: `slog.NewJSONHandler` to stdout with `LevelDebug` in dev, `LevelInfo` in prod.
-- Request logging: `slog-chi` middleware auto-logs every request with method, path, status, latency.
-- Noise filtering: Health, ready, and metrics endpoints are excluded from request logs via `slogchi.IgnorePath`.
-- OTel correlation: In prod mode (`ENV_MODE=prod`), `slog-chi` injects `trace_id` and `span_id` into every request log line.
-- Application logging: Use `slog.InfoContext(ctx, ...)` to propagate request context (and trace IDs) into business logic logs.
+## Errors and request validation
 
-**Anti-patterns:**
-- Never use `log.Printf` or `fmt.Printf` in core or handler. Use `slog`.
-- Never log sensitive data (credentials, tokens, PII).
-- Always use structured fields, not string interpolation: `slog.Info("created", "item_id", id)` not `slog.Info(fmt.Sprintf("created %s", id))`.
+**Source:** [`handler/item.go`](../backend/services/example/handler/item.go), [`handler/errors.go`](../backend/services/example/handler/errors.go).
 
-**WHERE:** `cmd/example/main.go` — `buildLoggerMiddleware()` function, `slog.NewJSONHandler` setup in `main()`.
+Handlers bound JSON request bodies, reject trailing JSON, validate transport inputs, call core, then translate domain errors using `errors.Is`. Known failures have stable, safe messages; unrecognized errors return `500 internal_server_error` without `err.Error()`. Read [conventions](conventions.md#api-responses) for the response shape.
 
----
+`X-Owner-Id` is an example trusted-proxy contract, **not authentication**. A deployment must prevent direct untrusted access and have its authentication proxy strip client-supplied owner headers before setting the authenticated identity. `/metrics` also needs an internal network or access policy. Replace this boundary when adopting the template if those conditions do not hold.
 
-## Graceful Shutdown
+## Worker and graceful shutdown
 
-**WHAT:** 3-phase shutdown sequence that drains in-flight requests without dropping traffic during K8s rolling deployments.
+**Source:** [`core/worker.go`](../backend/services/example/core/worker.go), `serve` in the entry point.
 
-**WHY:** K8s sends SIGTERM, then waits `terminationGracePeriodSeconds` before SIGKILL. But endpoint de-registration is asynchronous -- kube-proxy and ingress controllers may still route traffic for several seconds after SIGTERM. Without a drain delay, the pod stops accepting requests while traffic is still arriving.
+The sample worker waits one minute before its first task, then runs sequentially at `WORKER_INTERVAL`. A task panic is logged without its payload and recovered at the task boundary; later tasks can still run. Tasks must honor context cancellation. Do not detach work that outlives the task or hide a canceled context.
 
-**HOW:**
+On SIGINT/SIGTERM:
 
-```
-SIGTERM received
-    |
-    v
-Phase 1: shuttingDown.Store(true) --> /ready returns 503
-    |
-    v
-Phase 2: sleep 5s --> K8s endpoint de-registration propagates
-    |
-    v
-Phase 3: httpSrv.Shutdown(ctx) with GRACEFUL_SHUTDOWN_TIMEOUT
-    |        also: workerCancel() stops background workers
-    v
-Process exits
-```
+1. Mark readiness unavailable and cancel the worker context.
+2. Wait `HTTP_DRAIN_DELAY` for endpoint deregistration; HTTP requests remain accepted during this interval.
+3. Drain HTTP and join the worker within the **same** `GRACEFUL_SHUTDOWN_TIMEOUT` budget, including the drain delay.
+4. Only after both finish, close the database pool. Flush and shut down tracing with an additional maximum of five seconds.
 
-- Phase 1 uses `atomic.Bool` so the `/ready` handler is lock-free.
-- Phase 2 is a hard 5-second sleep. This is not configurable because it maps to K8s de-registration timing, not application behavior.
-- Phase 3 calls `http.Server.Shutdown()` which stops accepting new connections and waits for in-flight requests to complete, up to the timeout.
-- Background workers are cancelled via their `context.Context` before HTTP shutdown begins.
+A deadline failure cancels request contexts, closes HTTP connections, leaves dependencies alive for unfinished work until process exit, and exits 1. Set the orchestrator's termination grace above the application budget plus the tracing flush budget. Hijacked connections are not managed by `http.Server.Shutdown`; add explicit ownership before adding WebSockets or other hijacked protocols.
 
-**WHERE:** `cmd/example/main.go` — from `signal.Notify(stop, ...)` through end of `main()`.
+## OpenTelemetry: off by default
 
----
+**Source:** [`observability/otel.go`](../backend/pkg/observability/otel.go).
 
-## Health, Ready, and Metrics Endpoints
+An empty `OTEL_TRACING_ENDPOINT` leaves the global provider and propagator untouched and creates no exporter. Setting standard `OTEL_EXPORTER_OTLP_ENDPOINT` alone does not enable tracing in this template.
 
-**WHAT:** Three operational endpoints outside the API route group.
+To enable tracing, set `OTEL_TRACING_ENDPOINT=collector:4317`. Use `[IPv6]:4317` for IPv6. The endpoint is a host and port, not a URL. TLS is on by default; set `OTEL_TRACING_INSECURE=true` only for an explicitly trusted plaintext collector, such as a local development collector. This is gRPC OTLP, not HTTP OTLP on port 4318.
 
-**WHY:** K8s liveness/readiness probes and Prometheus scraping need dedicated endpoints that bypass auth and business logic.
+`OTEL_TRACING_SAMPLE_RATIO` defaults to `0.1` and must be finite in `[0,1]` when enabled. Parent-based sampling preserves local and remote parent decisions; the ratio governs roots only. W3C `traceparent`/`tracestate` and baggage propagate. At an untrusted ingress, enforce a sampling policy there if clients must not select sampling. Health, readiness and metrics routes do not create spans. Resource fields include service name, version, environment and region. The provider owns its batch processor and exporter, so shutdown flushes once rather than independently shutting down each layer. Both internal SDK diagnostics and async exporter failures use sanitized JSON logging.
 
-**HOW:**
+For local verification, use a gRPC collector, set ratio `1`, send a known `traceparent` on an API request, then terminate the service. Confirm exported server spans, matching log IDs and flush completion. Regression tests also exercise root/parent sampling, W3C propagation, disabled mode, logger grouping and a blocked collector's shutdown deadline.
 
-| Endpoint | Behavior | Used by |
-|----------|----------|---------|
-| `GET /health` | Always returns `200 OK`. Proves the process is alive. | K8s liveness probe |
-| `GET /ready` | Returns `200 READY` normally, `503 SHUTTING_DOWN` during graceful shutdown. | K8s readiness probe |
-| `GET /metrics` | Prometheus metrics via `promhttp.Handler()`. Exposes `http_requests_total`, `http_requests_in_flight`, `http_requests_bytes_in_flight`, `http_response_time_seconds`. | Prometheus scraper |
+## Database, queries and idempotency
 
-- These are registered directly on the root router, not under `/api/v1`.
-- `slog-chi` is configured to suppress request logs for these paths (noise reduction).
+**Source:** [`storage/postgres/client.go`](../backend/services/example/storage/postgres/client.go), [`q.sql`](../backend/services/example/storage/postgres/q.sql).
 
-**WHERE:** `cmd/example/main.go` — `/health`, `/ready`, `/metrics` route registrations.
+One shared pgx pool serves queries. Both PostgreSQL constructors take a startup context as their first argument. Migration startup owns a separate connection, interrupts its socket on cancellation (including library background-context lock calls), and closes all migration resources; failure closes the new pool. Pool connections and the initial ping have bounded timeouts. Migrations run before HTTP serving. Use append-only migration files and run `just sqlc-generate` after query/schema changes; never hand-edit generated code.
 
----
+Creation uses the `(name, owner_id)` unique constraint and `ON CONFLICT ... DO UPDATE`: repeats return the same row and refresh `updated_at`, not a byte-identical response. Ownership is checked before get/delete; lists filter by owner in SQL. This small example has no pagination, state machine, external provisioning or rollback orchestration. Add those only when the application's contract requires them. For multi-step atomic operations, use pgx transactions and `WithTx`; do not close a transaction-bound client because it shares the owning pool.
 
-## Error Handling
+## Build and delivery boundary
 
-**WHAT:** Sentinel errors defined in core, mapped to HTTP status codes in handler.
+**Source:** [`backend/.dockerignore`](../backend/.dockerignore), [`Dockerfile`](../backend/services/example/Dockerfile), [CI](../.github/workflows/ci.yml).
 
-**WHY:** Core layer has no knowledge of HTTP. Handler translates domain errors to transport-level responses. `errors.Is()` with wrapping preserves the ability to add context at each call site while still matching the root cause.
+Docker context is `backend/`. The allowlist admits module metadata, Go sources and embedded SQL migrations; it excludes vendor trees, local dependencies, binaries, tests and secret/config files, including nested `.env` files and directories. Explicitly extend the allowlist when adding other `go:embed` assets. The image is a static binary plus CA certificates in `scratch`, running as UID/GID 65532. Inject environment at runtime; never bake `.env` into the image.
 
-**HOW:**
-
-1. Define sentinels in `core/service.go`:
-   ```go
-   var ErrItemNotFound = errors.New("item not found")
-   ```
-
-2. Wrap with context in core methods:
-   ```go
-   return fmt.Errorf("%w: current status is %s", ErrItemNotActive, item.Status)
-   ```
-
-3. Map in `handler/errors.go`:
-   ```go
-   func mapItemError(err error) int {
-       switch {
-       case errors.Is(err, core.ErrItemNotFound):
-           return http.StatusNotFound
-       // ...
-       default:
-           return http.StatusInternalServerError
-       }
-   }
-   ```
-
-4. Use in handler:
-   ```go
-   status := mapItemError(err)
-   writeError(w, status, "create_item_failed", err.Error())
-   ```
-
-**Key rule:** The `default` case returns 500. Any unrecognized error is an internal server error. This means new sentinel errors that aren't added to the mapping will surface as 500s -- a safe default, but add the mapping when you add the error.
-
-**WHERE:** `core/service.go` (sentinels), `handler/errors.go` (mapping), `handler/item.go` (usage).
-
----
-
-## DB Access with sqlc
-
-**WHAT:** Type-safe SQL queries generated by sqlc from annotated `.sql` files.
-
-**WHY:** No ORM abstraction leaks. You write SQL, sqlc generates Go functions with correct types. The generated code uses `pgx/v5` directly. Compile-time safety: if your query doesn't match your schema, `sqlc generate` fails.
-
-**HOW:**
-
-1. Write migrations in `storage/postgres/migrations/` (numbered, `.up.sql` / `.down.sql`).
-2. Write queries in `storage/postgres/q.sql` with sqlc annotations:
-   ```sql
-   -- name: GetItemByID :one
-   SELECT * FROM items WHERE id = $1 LIMIT 1;
-
-   -- name: ListItemsByOwner :many
-   SELECT * FROM items WHERE owner_id = $1 ORDER BY created_at DESC;
-
-   -- name: UpdateItemStatus :exec
-   UPDATE items SET status = $1, updated_at = NOW() WHERE id = $2;
-   ```
-3. Run `sqlc generate` from `storage/postgres/` (or `just generate` from the service dir).
-4. Use generated methods: `s.db.Queries().GetItemByID(ctx, id)`.
-
-**Annotations:** `:one` returns a single row (error if not found), `:many` returns a slice, `:exec` returns no rows.
-
-**Migrations:** Embedded via `//go:embed migrations/*.sql` in `storage/postgres/client.go`. Run automatically at startup when `shouldRunMigrations` is true. Uses `golang-migrate` with the `iofs` source driver.
-
-**Dual connection pools:** `pkg/postgres` provides both a `pgxpool.Pool` (for sqlc/pgx-native queries) and a `database/sql.DB` (for golang-migrate, which requires the stdlib interface). This is a deliberate design choice, not redundancy.
-
-**WHERE:** `storage/postgres/q.sql` (queries), `storage/postgres/sqlc.yaml` (config), `storage/postgres/client.go` (client + migrations).
-
----
-
-## DB-Level Idempotency
-
-**WHAT:** Use PostgreSQL constraints and `ON CONFLICT` to make writes safe for retries without application-level state tracking.
-
-**WHY:** Clients retry. Networks are unreliable. If a create request is sent twice, the result should be the same. DB constraints enforce this at the lowest level — no race conditions, no application bugs.
-
-**HOW:**
-
-**Idempotent create** (see `core/item_create.go`, `q.sql`):
-```sql
-INSERT INTO items (name, owner_id)
-VALUES ($1, $2)
-ON CONFLICT (name, owner_id) DO UPDATE SET updated_at = NOW()
-RETURNING *;
-```
-The unique constraint `(name, owner_id)` prevents duplicates. `ON CONFLICT DO UPDATE` returns the existing row on retry. The caller gets back an item either way — no error handling needed for "already exists."
-
-Use `ON CONFLICT DO NOTHING` instead when you want to silently skip duplicates without returning the row.
-
-**Idempotent delete** (see `core/item_delete.go`):
-```
-Validate ownership (DB lookup) -> DELETE WHERE id = $1
-```
-Deleting a non-existent row is a no-op in PostgreSQL. The service returns 404 if the item wasn't found during the ownership check, which is correct for both first-attempt and retry scenarios.
-
-**Schema conventions:**
-- `CREATE TABLE IF NOT EXISTS` in migrations
-- Name constraints explicitly: `CONSTRAINT items_name_owner_unique UNIQUE (name, owner_id)`
-- Always define the unique constraint that your `ON CONFLICT` clause targets
-
-**WHERE:** `core/item_create.go`, `core/item_delete.go`, `storage/postgres/q.sql`, `storage/postgres/migrations/`.
-
----
-
-## Background Workers
-
-**WHAT:** Periodic goroutines that run on a fixed interval, started from `cmd/`, implemented in `core/`.
-
-**WHY:** Cleanup of stale state, reconciliation, metrics emission -- tasks that run independently of HTTP requests.
-
-**HOW:**
-
-```go
-workerCtx, workerCancel := context.WithCancel(context.Background())
-defer workerCancel()
-worker := core.NewWorker(pg, logger)
-go core.StartWorker(workerCtx, worker, cfg.WorkerInterval)
-```
-
-- **1-minute startup delay:** The worker waits 60 seconds before its first run. This avoids hammering the DB during service startup (especially during rolling deploys where many pods start simultaneously).
-- **Fixed interval:** After the first run, the worker ticks on `cfg.WorkerInterval` (default 1h).
-- **Clean shutdown:** The worker's context is cancelled during graceful shutdown (before HTTP drain). The `select` on `ctx.Done()` exits the loop immediately.
-- **No panic propagation:** Worker errors are logged, not propagated. A worker failure does not crash the service.
-
-**WHERE:** `core/worker.go` (implementation), `cmd/example/main.go` — `core.NewWorker` / `core.StartWorker` calls in `main()`.
-
----
-
-## Middleware Stack Order
-
-**WHAT:** Chi middleware registered in a specific order in `cmd/example/main.go`.
-
-**WHY:** Middleware executes in registration order for requests and reverse order for responses. Getting the order wrong causes subtle bugs (e.g., panic recovery not covering other middleware, request IDs missing from logs).
-
-**HOW:**
-
-```go
-r.Use(
-    middleware.Recoverer,          // 1. Catch panics (must be first)
-    middleware.RequestID,          // 2. Generate X-Request-Id
-    middleware.RealIP,             // 3. Extract real client IP from X-Forwarded-For
-    buildLoggerMiddleware(...),    // 4. Log requests (uses RequestID and RealIP)
-    httputil.ReqMonitor(name),    // 5. Prometheus metrics
-)
-```
-
-**Why this order:**
-1. **Recoverer first** -- catches panics from any subsequent middleware or handler. If it were later, a panic in RequestID or RealIP would crash the process.
-2. **RequestID before logger** -- the logger needs the request ID to include it in log lines.
-3. **RealIP before logger** -- the logger should log the real client IP, not the proxy IP.
-4. **Logger before Prometheus** -- request logs include the status code from the response (deferred), metrics also need the status code. Order between these two is less critical, but logger-before-metrics is conventional.
-
-**OTel wrapping:** The entire router is wrapped with `otelhttp.NewHandler` at the `http.Server` level, not as Chi middleware. This ensures every request gets a trace span.
-
-**WHERE:** `cmd/example/main.go` — `r.Use(...)` block in `main()`.
-
----
-
-## Dockerfile Pattern
-
-**WHAT:** Single-stage Dockerfile that builds a statically-linked binary and runs as a non-root user.
-
-**WHY:** Single-stage is simpler to debug and maintain. `CGO_ENABLED=0` produces a static binary with no libc dependency. Non-root user follows the principle of least privilege.
-
-**HOW:**
-
-```dockerfile
-FROM golang:1.24-bookworm
-
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-
-WORKDIR /build
-ADD ./ ./
-
-RUN go build -o /opt/example ./services/example/cmd/example
-
-RUN groupadd example && useradd -g example example -d /home/example && \
-    chown -R example:example /opt/example && chmod +x /opt/example
-
-USER example
-EXPOSE 8080
-CMD ["/opt/example"]
-```
-
-**Build context:** The Dockerfile lives in `services/example/` but the build context is `backend/` (the module root). This is necessary because the build needs access to `pkg/` and `go.mod`.
-
-**Docker build command** (from repo root):
-```bash
-docker build -f backend/services/example/Dockerfile backend/
-```
-
-**WHERE:** `services/example/Dockerfile`.
-
----
-
-## Ownership Validation
-
-**WHAT:** Every mutating and read endpoint validates that the requesting owner matches the resource owner.
-
-**WHY:** Multi-tenant system. Without ownership checks, one tenant could read/modify/delete another tenant's resources.
-
-**HOW:**
-
-1. **Extract:** `extractOwnerID(r)` reads `X-Owner-Id` from the request header (set by an upstream auth proxy/gateway).
-2. **Reject early:** If the header is missing, return `401 Unauthorized` immediately in the handler. This check happens before any core method call.
-3. **Validate in core:** Core methods like `GetItem` and `DeleteItem` fetch the resource, then compare `item.OwnerID != ownerID`. Mismatch returns `ErrItemAccessDenied`.
-4. **Map in handler:** `ErrItemAccessDenied` maps to `403 Forbidden`.
-
-**Scope by owner:** List endpoints filter by owner at the query level (`WHERE owner_id = $1`). There is no "list all items across all owners" endpoint.
-
-**WHERE:** `handler/helpers.go` (extractOwnerID), `handler/item.go` (early rejection), `core/item_create.go` and `core/item_delete.go` (ownership validation).
+Go and build images are version-pinned, images by digest and GitHub actions by commit. Refresh all linked pins together. `just check` is the Go/SQL verification gate; CI additionally builds the container. See [releasing](releasing.md) for publishing, which is separate from local verification.

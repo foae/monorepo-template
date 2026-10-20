@@ -2,6 +2,8 @@
 
 Rules and standards for code in this repository. These are not suggestions.
 
+Read this before editing Go. Next, open only the relevant [pattern](patterns.md) and linked implementation. Keep documentation declarative: one source of truth per contract, explicit prerequisites and observable verification results.
+
 ---
 
 ## Naming
@@ -32,7 +34,7 @@ import (
 )
 ```
 
-`goimports` enforces this automatically. Run it or configure your editor to run it on save.
+Use `gofmt`; configure `goimports` with `-local monorepo-template/backend` when using it so internal imports remain separate. Keep the required automaxprocs blank import visibly unconditional.
 
 ---
 
@@ -54,16 +56,16 @@ return fmt.Errorf("pg: unable to run migrations: %w", err)
 
 ## Logging
 
-- **Always use `slog`.** Never `log.Printf` in core or handler (exception: `log.Fatalf` in `main()` during boot, before slog is initialized).
+- **Always use JSON `slog`.** Install the logger before configuration parsing. Only `main` calls `os.Exit`; libraries return errors. The automaxprocs blank import's upstream pre-main diagnostic is the sole plain-text exception.
 - **Structured fields, not interpolation:**
   ```go
   // correct
-  slog.InfoContext(ctx, "item created", "item_id", item.ID, "owner_id", ownerID)
+  slog.InfoContext(ctx, "item created", "item_id", item.ID)
 
   // wrong
   slog.Info(fmt.Sprintf("item %s created for owner %s", item.ID, ownerID))
   ```
-- **Use `slog.InfoContext(ctx, ...)`** (not `slog.Info`) whenever a `context.Context` is available. This propagates trace IDs into log lines in prod.
+- **Use context-bearing logging** whenever a `context.Context` is available. Valid trace/span IDs are correlated in both dev and prod, including grouped loggers.
 - **Never log sensitive data:** No credentials, tokens, connection strings, or PII in log messages or structured fields.
 - **Log levels:**
   - `Debug` -- verbose operational detail, only active in dev.
@@ -77,7 +79,7 @@ return fmt.Errorf("pg: unable to run migrations: %w", err)
 
 - **Table-driven tests.** Use `[]struct{ name string; ... }` with `t.Run(tc.name, ...)`.
 - **Parallel-safe.** Use `t.Parallel()` at the top of each test and subtest unless there is a shared resource that prevents it.
-- **Test error paths.** Every function that returns an error should have at least one test case that exercises the error path.
+- **Test meaningful failure paths and invariants.** Cover caller-visible errors, cancellation, resource ownership, precedence and boundaries; do not test incidental wording, wiring or copies.
 - **No DB mocking unless justified.** For storage-layer tests, prefer a real test database (via `testcontainers` or a local Postgres). If mocking is unavoidable, document why.
 - **Deterministic.** No `time.Sleep` in tests, no reliance on wall-clock ordering, no flaky assertions on timing.
 - **Test file location:** Same package, `_test.go` suffix. `core/item_create_test.go` tests `core/item_create.go`.
@@ -86,12 +88,13 @@ return fmt.Errorf("pg: unable to run migrations: %w", err)
 
 ## API Responses
 
-- **Always JSON** with `Content-Type: application/json` header. The `writeJSON` helper handles this.
+- **API responses are JSON** with `Content-Type: application/json`; health/readiness and Prometheus endpoints intentionally use their own formats. The `writeJSON` helper handles API encoding.
 - **Success responses:** Entity-specific response DTOs defined in `handler/types.go`. Never return raw sqlc models -- always convert via a helper (e.g., `itemToResponse`).
 - **Error responses:** Always use the `ErrorResponse` struct:
   ```json
   {"error": "error_type_snake_case", "message": "Human-readable description"}
   ```
+- Never expose arbitrary `err.Error()`, panic values, database errors or connection strings. Use fixed public messages and sanitized internal logging.
 - **Empty lists:** Return `[]` (empty JSON array), not `null`. Core methods return `[]T{}` (not nil) for empty results.
 - **Delete:** Return `204 No Content` with no body.
 
@@ -104,7 +107,7 @@ return fmt.Errorf("pg: unable to run migrations: %w", err)
 - **Down migrations:** Always provide a corresponding `.down.sql` for rollback. Keep them simple and idempotent (`DROP TABLE IF EXISTS`, `ALTER TABLE ... DROP COLUMN IF EXISTS`).
 - **UUIDs as primary keys.** Generated server-side via `gen_random_uuid()`.
 - **Timestamps:** `TIMESTAMPTZ NOT NULL DEFAULT NOW()` for `created_at` and `updated_at`. Update `updated_at` explicitly in UPDATE queries (`SET updated_at = NOW()`).
-- **Unique constraints:** Name them explicitly (`CONSTRAINT myentities_name_owner_unique UNIQUE (name, owner_id)`). Unnamed constraints generate random names that make debugging harder.
+- **Unique constraints:** Name them explicitly (`CONSTRAINT myentities_name_owner_unique UNIQUE (name, owner_id)`) to keep schema intent and migration references clear.
 - **Indexes:** Create indexes for columns used in WHERE and JOIN clauses. Name them `idx_<table>_<column>`.
 
 ---

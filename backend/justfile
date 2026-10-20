@@ -18,8 +18,9 @@ fmt-all:
 tidy:
     go mod tidy
 
-# Run all checks: fmt, vet, tidy, build.
-check-all: fmt-all vet-all tidy build-all
+# Run the same repository verification gate as CI.
+check-all:
+    just --justfile "{{source_directory()}}/../justfile" check
 
 # Clean all build artifacts.
 clean-all:

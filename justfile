@@ -5,7 +5,7 @@
 default:
     @just --list
 
-# Run every check CI runs (format, vet, tidy, build, test, sqlc diff).
+# Run CI's Go/SQL gate (format, vet, tidy, build, test, sqlc vet/diff).
 check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -18,7 +18,10 @@ check:
     if [[ "$before" != "$(cat go.mod go.sum | sha256sum)" ]]; then echo "go mod tidy changed go.mod/go.sum; review and commit the result"; exit 1; fi
     go build ./...
     go test -race ./...
-    sqlc diff -f services/example/storage/postgres/sqlc.yaml
+    while IFS= read -r -d '' config; do
+        sqlc vet -f "$config"
+        sqlc diff -f "$config"
+    done < <(find services -name sqlc.yaml -print0)
     echo "all checks passed"
 
 # Print the latest release tag (or "none").

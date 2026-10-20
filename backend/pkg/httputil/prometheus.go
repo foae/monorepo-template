@@ -69,7 +69,11 @@ func ReqMonitor(serviceName string) func(http.Handler) http.Handler {
 				inBytes.Sub(float64(ct))
 				inReq.Dec()
 
-				httpStatus := strconv.Itoa(ww.Status())
+				status := ww.Status()
+				if status == 0 {
+					status = http.StatusOK
+				}
+				httpStatus := strconv.Itoa(status)
 
 				reqCounterVec.With(prometheus.Labels{
 					"code":    httpStatus,

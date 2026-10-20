@@ -1,9 +1,7 @@
 package core
 
 import (
-	"context"
 	"errors"
-	"fmt"
 
 	"monorepo-template/backend/services/example/storage/postgres"
 )
@@ -22,9 +20,8 @@ type Service struct {
 
 // New creates a new service instance with all dependencies.
 func New(db *postgres.Client) (*Service, error) {
-	ctx := context.Background()
-	if err := db.DB().Ping(ctx); err != nil {
-		return nil, fmt.Errorf("unable to ping DB: %w", err)
+	if db == nil {
+		return nil, errors.New("database client must not be nil")
 	}
 
 	return &Service{

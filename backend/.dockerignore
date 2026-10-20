@@ -1,0 +1,27 @@
+# Only Go sources, module metadata, and embedded migrations enter the build.
+**
+!go.mod
+!go.sum
+!pkg/**/*.go
+!services/**/*.go
+!services/**/migrations/*.sql
+
+# Never re-include local dependencies, artifacts, or sensitive configuration.
+**/vendor/**
+**/node_modules/**
+**/bin/**
+**/dist/**
+**/build/**
+**/coverage/**
+**/.git/**
+**/.private/**
+**/.env
+**/.env.*
+**/.env/**
+**/.env.*/**
+**/*.env
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*_test.go
