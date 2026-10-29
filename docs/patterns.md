@@ -56,6 +56,17 @@ On SIGINT/SIGTERM:
 
 A deadline failure cancels request contexts, closes HTTP connections, leaves dependencies alive for unfinished work until process exit, and exits 1. Set the orchestrator's termination grace above the application budget plus the tracing flush budget. Hijacked connections are not managed by `http.Server.Shutdown`; add explicit ownership before adding WebSockets or other hijacked protocols.
 
+## Context and concurrency ownership
+
+Read this when introducing concurrent work or changing deadlines, cancellation or resource lifetimes; the [worker and shutdown contract](#worker-and-graceful-shutdown) remains authoritative.
+
+- Pass the caller's context through request work. Derive a child when an operation needs a tighter deadline; call its cancel function on every exit path unless ownership is explicitly transferred. In loops, release each iteration's resources promptly rather than accumulating deferred cleanup until the outer function returns.
+- Cancellation requests a stop; it does not prove work has finished. Each goroutine needs an owner, an exit mechanism and a way to join it before closing dependencies. Keep work synchronous unless concurrency serves a concrete requirement, and bound concurrent work and queues.
+- `context.WithoutCancel` removes cancellation and the deadline; it is not a background-job lifecycle. Work that must survive a request needs an explicit service-owned lifetime, bounds and shutdown ownership. Do not detach worker tasks.
+- Assign channel closure to the producer or coordinator that can prove all sends have finished. Multiple producers must finish before closure; receivers do not close channels to request cancellation. Not every channel needs closing.
+- A potentially blocking send or receive must have an exit path appropriate to its lifecycle. Do not add a `default` that silently drops required work. Choose buffering from the backpressure contract, not to hide a deadlock.
+- Sending a pointer or slice does not copy the referenced data. Choose explicit ownership transfer, immutable sharing or synchronization; copy only when independent ownership requires it. Concurrent map reads are safe without writes; accesses involving writes need synchronization.
+
 ## OpenTelemetry: off by default
 
 **Source:** [`observability/otel.go`](../backend/pkg/observability/otel.go).

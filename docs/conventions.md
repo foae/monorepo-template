@@ -4,6 +4,19 @@ Rules and standards for code in this repository. These are not suggestions.
 
 Read this before editing Go. Next, open only the relevant [pattern](patterns.md) and linked implementation. Keep documentation declarative: one source of truth per contract, explicit prerequisites and observable verification results.
 
+## Read by task
+
+Load only the relevant section and its linked implementation, not every document or upstream skill:
+
+- Adding a service: [service guide](adding-a-service.md).
+- Changing package boundaries: [architecture](architecture.md) and [refactoring](go-workflows.md#refactoring).
+- Changing cancellation, goroutines or channels: [lifecycle ownership](patterns.md#context-and-concurrency-ownership).
+- Diagnosing a failure: [debugging](go-workflows.md#debugging).
+- Changing interfaces, mutable data or resource ownership: [targeted safety checks](go-workflows.md#targeted-safety-checks).
+- Changing externally reachable behavior: [trust-boundary review](go-workflows.md#trust-boundary-review).
+
+These repository-owned docs travel with forks and are the shared guidance for humans and agents. They require no skill plugin or harness-specific tooling.
+
 ---
 
 ## Naming

@@ -7,7 +7,7 @@ The example service ships with a chi HTTP API, PostgreSQL via pgx and sqlc, embe
 ## Start here: readers and agents
 
 1. Run the example using [getting started](docs/getting-started.md).
-2. Before changing Go, read [conventions](docs/conventions.md), then the relevant section of [patterns](docs/patterns.md). Source links there are the implementation authority.
+2. Before changing Go, read [conventions](docs/conventions.md#read-by-task) and follow its task-specific links. Source links in [patterns](docs/patterns.md) are the implementation authority.
 3. To adopt the repository, follow [using the template](docs/using-the-template.md); to add a service, follow [adding a service](docs/adding-a-service.md).
 4. Verify with `just check` and a real service/container smoke run before publishing via [releasing](docs/releasing.md).
 
@@ -55,6 +55,7 @@ justfile            Repo-level recipes: check, version, release
 | Pattern reference (config, logging, shutdown, sqlc, idempotency, ...) | [docs/patterns.md](docs/patterns.md) |
 | Creating a new service step by step | [docs/adding-a-service.md](docs/adding-a-service.md) |
 | Naming, imports, errors, logging, testing rules | [docs/conventions.md](docs/conventions.md) |
+| On-demand debugging, refactoring, safety and trust-boundary checks | [docs/go-workflows.md](docs/go-workflows.md) |
 | CI, versioning, and publishing releases | [docs/releasing.md](docs/releasing.md) |
 | Contributor workflow summary | [CLAUDE.md](CLAUDE.md) |
 
